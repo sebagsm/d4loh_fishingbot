@@ -414,7 +414,7 @@ def main():
             print(f"[hotkey error] {exc}")
 
     print("=" * 52)
-    print("  Diablo 4 VoH — Fishing Bot")
+    print("  Diablo 4 LoH — Fishing Bot")
     print("  F5 = start / pause    F6 = quit")
     print("  Move mouse to screen corner = emergency stop")
     print("=" * 52)
