@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """
-diablo4 loh fishing bot
+diablo4 loh fishing bot v0.2
+
+changelog: 
+
+- added potion usage :
+
+POTION_ENABLED       = True   # set False to disable entirely
+POTION_KEY           = "q"
+POTION_EVERY_N_KILLS = 1      # change to 2, 3, etc.
+
 
 auto-casts, detects bite prompt via multi-template matching, reels in.
 on timeout (mob from water), automatically attacks with right mosue click x4.
@@ -43,13 +52,29 @@ import cv2
 import numpy as np
 import pyautogui
 from pynput import keyboard
+"""
+
+import time
+import random
+import csv
+import threading
+from datetime import datetime
+from pathlib import Path
+from enum import Enum, auto
+
+import mss
+import cv2
+import numpy as np
+import pyautogui
+from pynput import keyboard
 
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 # Key bindings
-CAST_KEY  = "`"
-REEL_KEY  = "1"
+CAST_KEY   = "`"
+REEL_KEY   = "1"
+POTION_KEY = "q"
 
 # Screen region to watch for the bite prompt (x, y, width, height).
 # A tight ROI is faster and reduces false positives.
@@ -92,7 +117,7 @@ REEL_LOCKOUT    = 1.0
 # ── Combat (mob from water) ───────────────────────────────────────────────────
 
 # How many right-clicks to fire when a mob appears
-COMBAT_CLICKS       = 4
+COMBAT_CLICKS          = 4
 
 # Delay between each right-click attack
 COMBAT_CLICK_DELAY_MIN = 0.3
@@ -100,13 +125,25 @@ COMBAT_CLICK_DELAY_MAX = 0.6
 
 # How long to wait after the last attack before recasting
 # (gives the mob time to die and loot to appear)
-COMBAT_SETTLE_TIME  = 2.5
+COMBAT_SETTLE_TIME     = 2.5
+
+# ── Healing potion ────────────────────────────────────────────────────────────
+
+# Set to True to enable auto-potion after fights
+POTION_ENABLED         = True
+
+# Use potion every N mob kills  (e.g. 1 = after every fight, 3 = every 3 fights)
+POTION_EVERY_N_KILLS   = 1
+
+# Short delay before pressing the potion key (after combat settle)
+POTION_DELAY_MIN       = 0.3
+POTION_DELAY_MAX       = 0.7
 
 # ── Anti-AFK ──────────────────────────────────────────────────────────────────
 
-ANTI_AFK_INTERVAL_MIN = 180   # min seconds between anti-afk actions
-ANTI_AFK_INTERVAL_MAX = 300   # max seconds between anti-afk actions
-ANTI_AFK_WIGGLE_PX    = 8     # max mouse pixel offset per wiggle
+ANTI_AFK_INTERVAL_MIN  = 180   # min seconds between anti-afk actions
+ANTI_AFK_INTERVAL_MAX  = 300   # max seconds between anti-afk actions
+ANTI_AFK_WIGGLE_PX     = 8     # max mouse pixel offset per wiggle
 
 # ── Debug ─────────────────────────────────────────────────────────────────────
 
@@ -180,21 +217,23 @@ class AntiAFK:
 class FishingBot:
 
     def __init__(self):
-        self.state          = State.IDLE
-        self.running        = False
-        self.stats          = {
-            "casts":          0,
-            "catches":        0,
-            "timeouts":       0,
-            "mobs_killed":    0,
-            "double_blocked": 0,
+        self.state              = State.IDLE
+        self.running            = False
+        self.stats              = {
+            "casts":            0,
+            "catches":          0,
+            "timeouts":         0,
+            "mobs_killed":      0,
+            "potions_used":     0,
+            "double_blocked":   0,
         }
-        self.templates      = self._load_templates()
-        self._sct           = mss.mss()
-        self._cast_at       = 0.0
-        self._last_reel_at  = 0.0
+        self.templates          = self._load_templates()
+        self._sct               = mss.mss()
+        self._cast_at           = 0.0
+        self._last_reel_at      = 0.0
+        self._kills_since_potion = 0   # counts kills since last potion
         self._session_log: list[dict] = []
-        self._anti_afk      = AntiAFK()
+        self._anti_afk          = AntiAFK()
 
         pyautogui.FAILSAFE = True   # move mouse to corner to emergency-stop
 
@@ -271,7 +310,8 @@ class FishingBot:
     def _kill_mob(self):
         """
         A timeout while waiting for a bite means a mob climbed out of the water.
-        Fire right-click COMBAT_CLICKS times to kill it, then wait for it to die.
+        Fire right-click COMBAT_CLICKS times to kill it, wait for it to die,
+        then optionally use a healing potion based on POTION_EVERY_N_KILLS.
         """
         print(f"  [combat] Mob detected — attacking with {COMBAT_CLICKS}x right-click...")
         for i in range(COMBAT_CLICKS):
@@ -282,9 +322,26 @@ class FishingBot:
 
         print(f"  [combat] Waiting {COMBAT_SETTLE_TIME}s for mob to die...")
         time.sleep(COMBAT_SETTLE_TIME)
-        self.stats["mobs_killed"] += 1
+
+        self.stats["mobs_killed"]    += 1
+        self._kills_since_potion     += 1
         self._log("mob_killed", 0)
-        print(f"  [combat] Done — resuming fishing (mobs killed: {self.stats['mobs_killed']})")
+        print(f"  [combat] Done. Mobs killed: {self.stats['mobs_killed']} | "
+              f"Kills since last potion: {self._kills_since_potion}/{POTION_EVERY_N_KILLS}")
+
+        # ── Healing potion check ─────────────────────────────────────────────
+        if POTION_ENABLED and self._kills_since_potion >= POTION_EVERY_N_KILLS:
+            self._use_potion()
+
+    def _use_potion(self):
+        """Press the potion key with a small human-like delay."""
+        time.sleep(random.uniform(POTION_DELAY_MIN, POTION_DELAY_MAX))
+        pyautogui.press(POTION_KEY)
+        self._kills_since_potion  = 0
+        self.stats["potions_used"] += 1
+        self._log("potion_used", 0)
+        print(f"  [potion] Used healing potion ({POTION_KEY}) — "
+              f"total used: {self.stats['potions_used']}")
 
     # ── Input helpers ────────────────────────────────────────────────────────
 
@@ -343,12 +400,13 @@ class FishingBot:
 
     def _log(self, event: str, react_ms: int):
         self._session_log.append({
-            "timestamp":   datetime.now().isoformat(),
-            "event":       event,
-            "casts":       self.stats["casts"],
-            "catches":     self.stats["catches"],
-            "mobs_killed": self.stats["mobs_killed"],
-            "react_ms":    react_ms,
+            "timestamp":     datetime.now().isoformat(),
+            "event":         event,
+            "casts":         self.stats["casts"],
+            "catches":       self.stats["catches"],
+            "mobs_killed":   self.stats["mobs_killed"],
+            "potions_used":  self.stats["potions_used"],
+            "react_ms":      react_ms,
         })
 
     def _save_stats(self):
@@ -365,6 +423,7 @@ class FishingBot:
         print(f"[bot] Final: {catches}/{total} catches ({rate:.1f}%) | "
               f"Timeouts: {self.stats['timeouts']} | "
               f"Mobs killed: {self.stats['mobs_killed']} | "
+              f"Potions used: {self.stats['potions_used']} | "
               f"Double-blocked: {self.stats['double_blocked']}")
 
     # ── Start / stop ─────────────────────────────────────────────────────────
@@ -413,6 +472,12 @@ def main():
         except Exception as exc:
             print(f"[hotkey error] {exc}")
 
+    potion_status = (
+        f"every {POTION_EVERY_N_KILLS} kill(s)"
+        if POTION_ENABLED
+        else "disabled"
+    )
+
     print("=" * 52)
     print("  Diablo 4 LoH — Fishing Bot")
     print("  F5 = start / pause    F6 = quit")
@@ -424,6 +489,7 @@ def main():
     print(f"  Threshold   : {TEMPLATE_THRESH}")
     print(f"  Reel lockout: {REEL_LOCKOUT}s  (double-fire prevention)")
     print(f"  Combat      : {COMBAT_CLICKS}x right-click, {COMBAT_SETTLE_TIME}s settle")
+    print(f"  Potion ({POTION_KEY})  : {potion_status}")
     print(f"  Watch region: {WATCH_REGION or 'full screen'}")
     print(f"  Anti-AFK    : every {ANTI_AFK_INTERVAL_MIN}–{ANTI_AFK_INTERVAL_MAX}s")
     print(f"  Debug frames: {'ON -> ' + str(DEBUG_FRAMES_DIR) + '/' if DEBUG_SAVE_FRAMES else 'off'}")
