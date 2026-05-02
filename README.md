@@ -1,4 +1,13 @@
-diablo4 loh fishing bot
+diablo4 loh fishing bot v0.2
+
+changelog: 
+
+- added potion usage :
+
+POTION_ENABLED       = True   # set False to disable entirely
+POTION_KEY           = "q"
+POTION_EVERY_N_KILLS = 1      # change to 2, 3, etc.
+
 
 auto-casts, detects bite prompt via multi-template matching, reels in.
 on timeout (mob from water), automatically attacks with right mosue click x4.
